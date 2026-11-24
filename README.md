@@ -7,8 +7,10 @@ DeepSeek-V4、DeepSeek-V4.1、GLM-5.3、GLM-5.3-Flash、Kimi K3.1 Pro、MiniMax 
 - 凭据 7 天自动续期（网关代刷 + 重新签票），不需要小艺Work 常驻
 - 同一账号只允许一个，两种方式混用也不会重复添加
 - 支持流式、工具调用（function calling）、思维链（`reasoning_content`）、用量/额度展示
-- **稳定性增强（v0.4.0）**：
-  - **工具 Schema 归一化**：转发前自动内联本地 `$defs`/`$ref`（带循环引用保护）并为缺失 `type` 的 `enum`/`const` 补全类型，修复 Codex / MCP 工具调用 `Kimi_K3.1_Pro_VE` 等模型触发 `11115 / server inner`（`502`）的问题。
+- **稳定性增强（v0.4.1）**：
+  - **Kimi 参数兼容与 502 修复**：Moonshot/Kimi 推理后端严格限制 `temperature = 1`（或缺省），传 `temperature: 0`（Qoder CN、Codex 等生成会话标题或确定性分析时默认传递）会导致上游网关返回 SSE 错帧 `11115 / server inner` 并触发 Magpie `502` 熔断与退避；本版本在转发前对 Kimi 模型自动剔除 `temperature !== 1`，并将对象形具名 `tool_choice` 规整为 `'required'`，彻底修复 502 报错。
+  - **SSE 错误帧早断与快速响应**：流式与非流式聚合在捕获上游错误帧时即刻切断连接并向 Magpie 透传标准错误，避免上游报错后因缺少 `[DONE]` 且持续发送 keepalive 导致客户端长时间悬挂。
+  - **工具 Schema 归一化（v0.4.0）**：转发前自动内联本地 `$defs`/`$ref`（带循环引用保护）并为缺失 `type` 的 `enum`/`const` 补全类型，修复 Codex / MCP 工具调用 `Kimi_K3.1_Pro_VE` 等模型触发 `11115 / server inner`（`502`）的问题。
   - **4.5 MiB 请求体前置 `413` 保护**：规避华为小艺网关超过 `5 MiB` 时挂起 ~56 秒后返回 `408 Request Timeout.` 的问题，直接毫秒级返回标准 `413` 以触发 Magpie 原生 `body_cap` 自动裁剪最早历史图片并无感重试；若 `>= 4 MiB` 请求仍偶发 `408` 也会转为 `413` 兜底。
   - **非流式错误透传**：`aggregate()` 捕获上游 SSE `error` 帧并返回 `502`，不再静默返回空 `200`。
 

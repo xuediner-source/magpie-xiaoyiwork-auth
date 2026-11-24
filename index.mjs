@@ -666,6 +666,9 @@ function frameToText(block, modelHint) {
   if (data === '[DONE]') return null
   const parsed = readJsonSafe(data)
   if (!parsed) return null
+  if (!parsed.choices && (parsed.code || parsed.message) && !parsed.error) {
+    parsed.error = { code: String(parsed.code ?? ''), message: String(parsed.message ?? '') }
+  }
   return `data: ${JSON.stringify(patchChunk(parsed, modelHint))}\n\n`
 }
 
@@ -678,6 +681,7 @@ function transformSse(upstream, modelHint) {
       const reader = upstream.getReader()
       const push = (text) => text && controller.enqueue(encoder.encode(text))
       try {
+        let hasError = false
         for (;;) {
           const { value, done } = await reader.read()
           if (done) break
@@ -686,10 +690,18 @@ function transformSse(upstream, modelHint) {
           while ((idx = buf.indexOf('\n\n')) >= 0) {
             const block = buf.slice(0, idx)
             buf = buf.slice(idx + 2)
-            push(frameToText(block, modelHint))
+            const text = frameToText(block, modelHint)
+            if (text) {
+              push(text)
+              if (text.includes('"error":')) {
+                hasError = true
+                break
+              }
+            }
           }
+          if (hasError) break
         }
-        push(frameToText(buf, modelHint)) // 尾部残帧
+        if (!hasError) push(frameToText(buf, modelHint)) // 尾部残帧
       } catch (err) {
         push(`data: ${JSON.stringify({ error: { message: `上游流式中断: ${err?.message || err}` } })}\n\n`)
       } finally {
@@ -721,6 +733,9 @@ async function aggregate(upstream, modelHint) {
     const frame = readJsonSafe(data)
     if (!frame) return
     if (frame.error && !acc.error) acc.error = frame.error
+    if (!acc.error && (frame.code || frame.message) && !frame.choices) {
+      acc.error = { code: String(frame.code ?? ''), message: String(frame.message ?? '') }
+    }
     if (frame.usage && typeof frame.usage === 'object') acc.usage = frame.usage
     const choice = Array.isArray(frame.choices) ? frame.choices[0] : null
     if (!choice) return
@@ -750,9 +765,11 @@ async function aggregate(upstream, modelHint) {
       const block = buf.slice(0, idx)
       buf = buf.slice(idx + 2)
       feed(block)
+      if (acc.error) break
     }
+    if (acc.error) break
   }
-  feed(buf)
+  if (!acc.error) feed(buf)
 
   if (acc.error && !acc.content && !acc.reasoning && acc.toolCalls.size === 0) {
     return { error: acc.error }
@@ -1130,6 +1147,32 @@ function normalizeToolSchemas(bodyObj) {
   return bodyObj
 }
 
+/**
+ * 请求体归一化：
+ * 1. Schema 归一化（补全 type，内联 $ref）。
+ * 2. Kimi / 推理模型上游网关兼容性修正：
+ *    - temperature：Kimi 推理后端只支持 temperature=1（或缺省）；
+ *      若传其它值（如 Qoder/Codex 生成标题或确定性任务传 0）会触发 11115 / server inner (502)。
+ *    - tool_choice：Kimi 推理后端只支持 'auto' / 'none' / 'required'（或缺省）；
+ *      若传对象（如 { type: 'function', function: { name: '...' } }）会触发 11115 / server inner，
+ *      转为 'required' 以保留强制调用工具意图且避免网关报错。
+ */
+function normalizeRequestBody(bodyObj) {
+  if (!bodyObj || typeof bodyObj !== 'object') return bodyObj
+  normalizeToolSchemas(bodyObj)
+
+  if (bodyObj.model && /kimi/i.test(bodyObj.model)) {
+    if (bodyObj.temperature !== undefined && bodyObj.temperature !== 1) {
+      delete bodyObj.temperature
+    }
+    if (typeof bodyObj.tool_choice === 'object' && bodyObj.tool_choice !== null) {
+      bodyObj.tool_choice = 'required'
+    }
+  }
+
+  return bodyObj
+}
+
 /* ========================================================================== */
 /* 登录态归一化                                                                 */
 /* ========================================================================== */
@@ -1398,7 +1441,7 @@ function bodyTooLargeResponse(actualBytes, limitBytes = MAX_HAG_BODY_BYTES) {
       const wantStream = Boolean(bodyObj?.stream)
       if (bodyObj && typeof bodyObj === 'object') {
         bodyObj.stream = true // 上游只吃 SSE，非流式由本地聚合
-        normalizeToolSchemas(bodyObj)
+        normalizeRequestBody(bodyObj)
         bodyText = JSON.stringify(bodyObj)
       }
 
@@ -1840,6 +1883,7 @@ export const _internal = {
   aggregate,
   transformSse,
   normalizeToolSchemas,
+  normalizeRequestBody,
   createCredential,
   gatewayRefreshToken,
   renewCredential,

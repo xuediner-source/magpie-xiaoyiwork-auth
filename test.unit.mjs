@@ -54,15 +54,73 @@ test('normalizeToolSchemas fills untyped enum/const and inlines local $ref/$defs
   assert.equal(JSON.stringify(p).includes('$ref'), false)
 })
 
-test('aggregate propagates upstream SSE error frames', async () => {
-  const errStream = new ReadableStream({
+test('aggregate propagates upstream SSE error frames (wrapped and bare)', async () => {
+  const errStream1 = new ReadableStream({
     start(c) {
       c.enqueue(new TextEncoder().encode('data: {"error":{"code":"11115","message":"server inner"}}\n\n'))
       c.close()
     },
   })
-  const out = await _internal.aggregate(errStream, 'Kimi_K3.1_Pro_VE')
-  assert.deepEqual(out, { error: { code: '11115', message: 'server inner' } })
+  const out1 = await _internal.aggregate(errStream1, 'Kimi_K3.1_Pro_VE')
+  assert.deepEqual(out1, { error: { code: '11115', message: 'server inner' } })
+
+  const errStream2 = new ReadableStream({
+    start(c) {
+      c.enqueue(new TextEncoder().encode('data: {"code":"11115","message":"server inner"}\n\n'))
+      c.close()
+    },
+  })
+  const out2 = await _internal.aggregate(errStream2, 'Kimi_K3.1_Pro_VE')
+  assert.deepEqual(out2, { error: { code: '11115', message: 'server inner' } })
+})
+
+test('normalizeRequestBody normalizes temperature and tool_choice for Kimi models', () => {
+  const bodyKimi = {
+    model: 'Kimi_K3.1_Pro_VE',
+    temperature: 0,
+    tool_choice: { type: 'function', function: { name: 'get_weather' } },
+  }
+  _internal.normalizeRequestBody(bodyKimi)
+  assert.equal(bodyKimi.temperature, undefined)
+  assert.equal(bodyKimi.tool_choice, 'required')
+
+  const bodyKimi1 = {
+    model: 'Kimi_K3.1_Pro_VE',
+    temperature: 1,
+    tool_choice: 'auto',
+  }
+  _internal.normalizeRequestBody(bodyKimi1)
+  assert.equal(bodyKimi1.temperature, 1)
+  assert.equal(bodyKimi1.tool_choice, 'auto')
+
+  const bodyDeepSeek = {
+    model: 'LLM_DeepSeekV4_Think',
+    temperature: 0,
+    tool_choice: { type: 'function', function: { name: 'get_weather' } },
+  }
+  _internal.normalizeRequestBody(bodyDeepSeek)
+  assert.equal(bodyDeepSeek.temperature, 0)
+  assert.deepEqual(bodyDeepSeek.tool_choice, { type: 'function', function: { name: 'get_weather' } })
+})
+
+test('transformSse terminates immediately on error frame without hanging', async () => {
+  const errStream = new ReadableStream({
+    start(c) {
+      c.enqueue(new TextEncoder().encode(': keepalive\n\ndata: {"code":"11115","message":"server inner"}\n\n'))
+      c.close()
+    },
+  })
+  const transformed = _internal.transformSse(errStream, 'Kimi_K3.1_Pro_VE')
+  const reader = transformed.getReader()
+  const decoder = new TextDecoder()
+  let collected = ''
+  for (;;) {
+    const { value, done } = await reader.read()
+    if (done) break
+    collected += decoder.decode(value)
+  }
+  assert.match(collected, /"code":"11115"/)
+  assert.match(collected, /data: \[DONE\]/)
 })
 
 test('loader.fetch rejects bodies above 4.5 MiB with standard HTTP 413 without network call', async () => {
