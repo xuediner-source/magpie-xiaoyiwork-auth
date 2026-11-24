@@ -1,0 +1,15 @@
+node_modules/
+*.log
+*.tgz
+.DS_Store
+.bun-tag
+session.json
+credential.json
+plugin-auth.json
+plugins.yml
+accounts.db*
+*.reg
+*credential*.txt
+*token*.txt
+secret-backup-*.txt
+xiaoyi-points-state.json
